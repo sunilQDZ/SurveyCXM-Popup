@@ -1,12 +1,17 @@
 import secrets
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Form, Request
+from fastapi.responses import JSONResponse
 from loguru import logger
 from config import settings
 import database
 from database import get_db_service
 from services.rate_limiter import rate_limiter
-from services.category_service import validate_industry_name, generate_industry_categories
+from services.category_service import (
+    validate_industry_name,
+    generate_industry_categories,
+    CategoryGenerationError
+)
 
 router = APIRouter()
 
@@ -59,18 +64,45 @@ async def generate_categories(
     logger.info(f"API Request: POST /api/generate-categories | client_id={client_id}, survey_id={survey_id}, industry='{industry_name}', categories_count={category_creation_count}, subcategories_count={subcategory_creation_count}")
 
     # 5. Generate Main Categories & Sub-Categories based on requested counts
-    categories = generate_industry_categories(
-        industry_name=industry_name,
-        client_id=client_id,
-        survey_id=survey_id,
-        category_creation_count=category_creation_count,
-        subcategory_creation_count=subcategory_creation_count
-    )
+    try:
+        categories = generate_industry_categories(
+            industry_name=industry_name,
+            client_id=client_id,
+            survey_id=survey_id,
+            category_creation_count=category_creation_count,
+            subcategory_creation_count=subcategory_creation_count
+        )
+    except CategoryGenerationError as cge:
+        logger.error(f"Category generation error | client_id={client_id}, survey_id={survey_id}: {cge.developer_message}")
+        return JSONResponse(
+            status_code=cge.status_code,
+            content={
+                "status": "error",
+                "message": cge.user_message,
+                "client_id": client_id,
+                "survey_id": survey_id,
+                "industry_name": industry_name,
+                "categories": []
+            }
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in category generation | client_id={client_id}, survey_id={survey_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "This service is currently unavailable. Please try again later.",
+                "client_id": client_id,
+                "survey_id": survey_id,
+                "industry_name": industry_name,
+                "categories": []
+            }
+        )
 
-    # 6. Push Generated Categories to Database when DB is available
-    db = get_db_service()
-    if db and database.DB_AVAILABLE and not settings.use_mock_data:
-        categories = db.save_generated_categories(client_id=client_id, survey_id=survey_id, categories=categories)
+    # 6. Push Generated Categories to Database (COMMENTED OUT: Categories are generated and returned, not saved directly to DB)
+    # db = get_db_service()
+    # if db and database.DB_AVAILABLE and not settings.use_mock_data:
+    #     categories = db.save_generated_categories(client_id=client_id, survey_id=survey_id, categories=categories)
 
     return {
         "status": "success",
